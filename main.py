@@ -4,13 +4,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict
-from threading import Thread
 
 class Vehicle:
     def __init__(self, id: int, direction: str):
         self.id = id
         self.direction = direction
-        self.position = 0.0
+        # Start at the edges
+        if direction == "north":
+            self.position = 0.5  # Start at top
+        elif direction == "south":
+            self.position = -0.5  # Start at bottom
+        elif direction == "east":
+            self.position = 0.5  # Start at right
+        else:  # west
+            self.position = -0.5  # Start at left
         self.speed = 0.01
 
 class TrafficLight:
@@ -56,10 +63,23 @@ class TrafficSimulation:
         id_counter = 0
         while True:
             # Add new vehicle if there's space
-            if not self.vehicles[direction] or abs(self.vehicles[direction][-1].position) > 0.1:
+            if not self.vehicles[direction]:
                 vehicle = Vehicle(id_counter, direction)
                 self.vehicles[direction].append(vehicle)
                 id_counter += 1
+            else:
+                # Check if there's enough space from the last vehicle
+                last_vehicle = self.vehicles[direction][-1]
+                if direction in ["north", "south"]:
+                    if abs(abs(last_vehicle.position) - 0.5) > 0.1:
+                        vehicle = Vehicle(id_counter, direction)
+                        self.vehicles[direction].append(vehicle)
+                        id_counter += 1
+                else:  # east, west
+                    if abs(abs(last_vehicle.position) - 0.5) > 0.1:
+                        vehicle = Vehicle(id_counter, direction)
+                        self.vehicles[direction].append(vehicle)
+                        id_counter += 1
             
             # Random interval between vehicles
             yield self.env.timeout(random.expovariate(0.1))
@@ -75,19 +95,23 @@ class TrafficSimulation:
             
             # Update each vehicle
             for vehicle in vehicles[:]:
-                if abs(vehicle.position) >= 0.5:
+                if abs(vehicle.position) <= 0.05:  # Remove vehicles that reach intersection
                     vehicles.remove(vehicle)
                     continue
                     
                 # Stop at red light near intersection
-                if not can_move and abs(vehicle.position) > 0.4:
+                if not can_move and abs(vehicle.position) < 0.15:
                     continue
                     
-                # Move vehicle
-                if direction in ["north", "east"]:
-                    vehicle.position += vehicle.speed
-                else:
+                # Move vehicle towards intersection (0,0)
+                if direction == "north":
                     vehicle.position -= vehicle.speed
+                elif direction == "south":
+                    vehicle.position += vehicle.speed
+                elif direction == "east":
+                    vehicle.position -= vehicle.speed
+                elif direction == "west":
+                    vehicle.position += vehicle.speed
         
         self.env.step()
 
@@ -99,31 +123,38 @@ def animate(frame_num, sim, ax):
     ax.axhline(y=0, color='black', linewidth=2)  # Horizontal road
     ax.axvline(x=0, color='black', linewidth=2)  # Vertical road
     
-    # Draw traffic lights
+    # Draw traffic lights near intersection
     ns_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["NS"]]
     ew_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["EW"]]
     
-    ax.plot(0, 0.5, marker='o', color=ns_color, markersize=10)  # North light
-    ax.plot(0, -0.5, marker='o', color=ns_color, markersize=10)  # South light
-    ax.plot(0.5, 0, marker='o', color=ew_color, markersize=10)  # East light
-    ax.plot(-0.5, 0, marker='o', color=ew_color, markersize=10)  # West light
+    # Traffic lights closer to intersection
+    light_offset = 0.12  # Distance from center
+    
+    # Draw traffic light boxes (black rectangles)
+    ax.add_patch(plt.Rectangle((-0.02, light_offset-0.02), 0.04, 0.04, color='black'))  # North
+    ax.add_patch(plt.Rectangle((-0.02, -light_offset-0.02), 0.04, 0.04, color='black'))  # South
+    ax.add_patch(plt.Rectangle((light_offset-0.02, -0.02), 0.04, 0.04, color='black'))  # East
+    ax.add_patch(plt.Rectangle((-light_offset-0.02, -0.02), 0.04, 0.04, color='black'))  # West
+    
+    # Draw traffic light colors
+    ax.plot(0, light_offset, marker='o', color=ns_color, markersize=6)  # North
+    ax.plot(0, -light_offset, marker='o', color=ns_color, markersize=6)  # South
+    ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=6)  # East
+    ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=6)  # West
     
     # Draw vehicles
     for direction, vehicles in sim.vehicles.items():
         for vehicle in vehicles:
-            if direction == "north":
+            if direction in ["north", "south"]:
                 ax.plot(0, vehicle.position, 'bo', markersize=8)
-            elif direction == "south":
-                ax.plot(0, vehicle.position, 'bo', markersize=8)
-            elif direction == "east":
-                ax.plot(vehicle.position, 0, 'bo', markersize=8)
-            elif direction == "west":
+            else:  # east, west
                 ax.plot(vehicle.position, 0, 'bo', markersize=8)
     
     ax.set_xlim(-0.6, 0.6)
     ax.set_ylim(-0.6, 0.6)
     ax.set_title(f"Traffic Flow Simulation\nTime: {sim.env.now:.1f}s")
     ax.grid(True)
+    ax.set_aspect('equal')
 
 def main():
     # Create simulation
