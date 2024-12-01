@@ -147,19 +147,20 @@ def animate(frame_num, sim, ax):
     ns_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["NS"]]
     ew_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["EW"]]
     
-    light_offset = 0.12
+    # Reduced light offset for more inner placement
+    light_offset = 0.06  # Reduced from 0.12
     
     # Traffic light boxes
-    ax.add_patch(plt.Rectangle((-0.02, light_offset-0.02), 0.04, 0.04, color='black'))  # North
-    ax.add_patch(plt.Rectangle((-0.02, -light_offset-0.02), 0.04, 0.04, color='black'))  # South
-    ax.add_patch(plt.Rectangle((light_offset-0.02, -0.02), 0.04, 0.04, color='black'))  # East
-    ax.add_patch(plt.Rectangle((-light_offset-0.02, -0.02), 0.04, 0.04, color='black'))  # West
+    ax.add_patch(plt.Rectangle((-0.01, light_offset-0.01), 0.02, 0.02, color='black'))  # North
+    ax.add_patch(plt.Rectangle((-0.01, -light_offset-0.01), 0.02, 0.02, color='black'))  # South
+    ax.add_patch(plt.Rectangle((light_offset-0.01, -0.01), 0.02, 0.02, color='black'))  # East
+    ax.add_patch(plt.Rectangle((-light_offset-0.01, -0.01), 0.02, 0.02, color='black'))  # West
     
-    # Traffic light colors
-    ax.plot(0, light_offset, marker='o', color=ns_color, markersize=6)  # North
-    ax.plot(0, -light_offset, marker='o', color=ns_color, markersize=6)  # South
-    ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=6)  # East
-    ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=6)  # West
+    # Traffic light colors - smaller markers for more compact appearance
+    ax.plot(0, light_offset, marker='o', color=ns_color, markersize=4)  # North
+    ax.plot(0, -light_offset, marker='o', color=ns_color, markersize=4)  # South
+    ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=4)  # East
+    ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=4)  # West
     
     # Draw vehicles with offset lanes
     for direction, vehicles in sim.vehicles.items():
