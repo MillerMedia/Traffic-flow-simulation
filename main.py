@@ -5,6 +5,15 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
+NUM_LANES = 2
+GREEN_DURATION = 30  # ✅
+YELLOW_DURATION = 5  # ✅
+OBSERVATION_ZONE_LENGTH = 0.5 # ✅
+AVERAGE_SPEED = 30 # ✅
+AVERAGE_ARRIVAL_RATE = 0.5  # ✅
+TRAFFIC_VOLUME = 10 # Average cars per observation zone per minute
+MINIMUM_FOLLOW_DISTANCE = 0.05
+
 class Vehicle:
     def __init__(self, id: int, direction: str):
         self.id = id
@@ -14,16 +23,16 @@ class Vehicle:
         
         # Set initial position and offset based on direction
         if direction == "north":
-            self.position = 0.5  # Start at top
+            self.position = OBSERVATION_ZONE_LENGTH  # Start at top
             self.x = self.lane_offset  # Slightly right lane
         elif direction == "south":
-            self.position = -0.5  # Start at bottom
+            self.position = -OBSERVATION_ZONE_LENGTH  # Start at bottom
             self.x = -self.lane_offset  # Slightly left lane
         elif direction == "east":
-            self.position = 0.5  # Start at right
+            self.position = OBSERVATION_ZONE_LENGTH  # Start at right
             self.y = self.lane_offset  # Slightly upper lane
         else:  # west
-            self.position = -0.5  # Start at left
+            self.position = -OBSERVATION_ZONE_LENGTH  # Start at left
             self.y = -self.lane_offset  # Slightly lower lane
         
         self.speed = 0.01
@@ -46,19 +55,19 @@ class TrafficLight:
         while True:
             # EW green, NS red
             self.states = {"NS": "red", "EW": "green"}
-            yield self.env.timeout(30)
+            yield self.env.timeout(GREEN_DURATION)
             
             # EW yellow
             self.states["EW"] = "yellow"
-            yield self.env.timeout(5)
+            yield self.env.timeout(YELLOW_DURATION)
             
             # NS green, EW red
             self.states = {"NS": "green", "EW": "red"}
-            yield self.env.timeout(30)
+            yield self.env.timeout(GREEN_DURATION)
             
             # NS yellow
             self.states["NS"] = "yellow"
-            yield self.env.timeout(5)
+            yield self.env.timeout(YELLOW_DURATION)
 
 class TrafficSimulation:
     def __init__(self):
@@ -87,7 +96,7 @@ class TrafficSimulation:
             stats = self.stats[direction]
             stats.waiting_count = sum(1 for v in vehicles 
                                     if not v.crossed_intersection 
-                                    and abs(v.position) < 0.15)
+                                    and abs(v.position) < MINIMUM_FOLLOW_DISTANCE)
 
     def generate_vehicles(self, direction):
         id_counter = 0
@@ -100,32 +109,38 @@ class TrafficSimulation:
             else:
                 # Check if there's enough space from the last vehicle
                 last_vehicle = self.vehicles[direction][-1]
-                if abs(abs(last_vehicle.position) - 0.5) > 0.1:
+                if abs(abs(last_vehicle.position) - OBSERVATION_ZONE_LENGTH) > MINIMUM_FOLLOW_DISTANCE:
                     vehicle = Vehicle(id_counter, direction)
                     self.vehicles[direction].append(vehicle)
                     id_counter += 1
             
-            # Random interval between vehicles
-            yield self.env.timeout(random.expovariate(0.1))
+            # Random interval between vehicles based on average arrival rate
+            yield self.env.timeout(random.expovariate(AVERAGE_ARRIVAL_RATE))
     
     def update(self):
         # Move vehicles based on traffic light state
+        # Convert speed from mph to miles per timestep
+        base_movement = AVERAGE_SPEED / 3600  # Convert from miles/hour to miles/second
+        
         for direction, vehicles in self.vehicles.items():
             if not vehicles:
                 continue
                 
             light_group = "NS" if direction in ["north", "south"] else "EW"
-            can_move = self.traffic_light.states[light_group] != "red"
+            can_move = self.traffic_light.states[light_group] != "red" and self.traffic_light.states[light_group] != "yellow"
             
             # Update each vehicle
-            for vehicle in vehicles[:]:
+            for i, vehicle in enumerate(vehicles[:]):
+                # Vary movement speed randomly around average
+                movement_per_step = base_movement * (0.8 + 0.4 * random.random())  # Varies from 80% to 120% of average
+                
                 # Start wait time tracking
-                if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < 0.15:
+                if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE:
                     if vehicle.wait_start is None:
                         vehicle.wait_start = self.env.now
 
                 # Remove completed vehicles
-                if abs(vehicle.position) >= 0.5 and vehicle.crossed_intersection:
+                if abs(vehicle.position) >= OBSERVATION_ZONE_LENGTH and vehicle.crossed_intersection:
                     if vehicle.wait_start is not None:
                         wait_time = self.env.now - vehicle.wait_start
                         self.stats[direction].wait_times.append(wait_time)
@@ -134,26 +149,33 @@ class TrafficSimulation:
                     continue
                 
                 # Handle intersection crossing
-                if abs(vehicle.position) <= 0.05 and not vehicle.crossed_intersection:
+                if abs(vehicle.position) <= 0.1 and not vehicle.crossed_intersection:
                     if can_move:
                         vehicle.crossed_intersection = True
-                        vehicle.position = -0.05 if vehicle.position > 0 else 0.05
+                    if vehicle.wait_start is not None:
                         vehicle.wait_start = None
-                    continue
+                    if not can_move:
+                        continue
+                
+                # Check for vehicle ahead
+                if i > 0:
+                    vehicle_ahead = vehicles[i-1]
+                    if abs(abs(vehicle.position) - abs(vehicle_ahead.position)) < MINIMUM_FOLLOW_DISTANCE:
+                        continue
                 
                 # Stop at red light near intersection
-                if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < 0.15:
+                if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < 0.1:
                     continue
                 
-                # Move vehicle
+                # Move vehicle using varied speed
                 if direction == "north":
-                    vehicle.position -= vehicle.speed
+                    vehicle.position -= movement_per_step
                 elif direction == "south":
-                    vehicle.position += vehicle.speed
+                    vehicle.position += movement_per_step
                 elif direction == "east":
-                    vehicle.position -= vehicle.speed
+                    vehicle.position -= movement_per_step
                 elif direction == "west":
-                    vehicle.position += vehicle.speed
+                    vehicle.position += movement_per_step
         
         self.update_stats()
         self.env.step()
@@ -177,7 +199,7 @@ def animate(frame_num, sim, ax, stats_ax):
     ns_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["NS"]]
     ew_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["EW"]]
     
-    light_offset = 0.06
+    light_offset = 0.02
     
     # Traffic light boxes
     ax.add_patch(plt.Rectangle((-0.01, light_offset-0.01), 0.02, 0.02, color='black'))
@@ -250,3 +272,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# @todo set global variables
