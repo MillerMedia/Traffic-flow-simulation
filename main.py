@@ -5,39 +5,54 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
-NUM_LANES = 2
-GREEN_DURATION = 30  # ✅
-YELLOW_DURATION = 7  # ✅
-OBSERVATION_ZONE_LENGTH = 0.5 # ✅
-AVERAGE_SPEED = 30 # ✅
-AVERAGE_ARRIVAL_RATE = 0.5  # ✅
-TRAFFIC_VOLUME = 10 # Average cars per observation zone per minute
+NUM_LANES = 2 # In each direction ✅
+LANE_WIDTH = 0.04
+
+GREEN_DURATION = 5
+YELLOW_DURATION = 2
+OBSERVATION_ZONE_LENGTH = 0.5 # @todo can we change the size of the map when adjusting this
+AVERAGE_SPEED = 60
+
+TRAFFIC_VOLUME = 25 # Average total number of cars at intersection per minute
+AVERAGE_ARRIVAL_RATE = 60/TRAFFIC_VOLUME # per second arrival rate
+
 MINIMUM_FOLLOW_DISTANCE = 0.05
 
+TURN_PROBABILITY = 0.7  # 30% chance for right lane vehicles to turn right
+
 class Vehicle:
-    def __init__(self, id: int, direction: str):
+    def __init__(self, id: int, direction: str, lane: int):
         self.id = id
         self.direction = direction
-        self.lane_offset = 0.02  # Offset for passing
+        self.lane = lane
         self.wait_start = None
+        
+        # Calculate lane offset based on lane number
+        lane_offset = 0.02 + (lane * 0.04)
         
         # Set initial position and offset based on direction
         if direction == "north":
             self.position = OBSERVATION_ZONE_LENGTH  # Start at top
-            self.x = self.lane_offset  # Slightly right lane
+            self.x = -lane_offset  # Offset based on lane (right side)
         elif direction == "south":
             self.position = -OBSERVATION_ZONE_LENGTH  # Start at bottom
-            self.x = -self.lane_offset  # Slightly left lane
+            self.x = lane_offset  # Offset based on lane (right side)
         elif direction == "east":
             self.position = OBSERVATION_ZONE_LENGTH  # Start at right
-            self.y = self.lane_offset  # Slightly upper lane
+            self.y = lane_offset  # Offset based on lane (right side)
         else:  # west
             self.position = -OBSERVATION_ZONE_LENGTH  # Start at left
-            self.y = -self.lane_offset  # Slightly lower lane
+            self.y = -lane_offset  # Offset based on lane (right side)
         
         self.speed = 0.01
         self.crossed_intersection = False
         self.completed = False
+        
+        # Determine if vehicle will turn right (only for right lane)
+        self.turning_right = lane == NUM_LANES-1 and random.random() < TURN_PROBABILITY
+        
+        # Track turning progress
+        self.turn_progress = 0  # 0 to 1 for turn animation
 
 class TrafficStats:
     def __init__(self):
@@ -72,11 +87,12 @@ class TrafficLight:
 class TrafficSimulation:
     def __init__(self):
         self.env = simpy.Environment()
+        # Initialize vehicles dict with lanes
         self.vehicles = {
-            "north": [],
-            "south": [],
-            "east": [],
-            "west": []
+            "north": [[] for _ in range(NUM_LANES)],
+            "south": [[] for _ in range(NUM_LANES)],
+            "east": [[] for _ in range(NUM_LANES)],
+            "west": [[] for _ in range(NUM_LANES)]
         }
         self.stats = {
             "north": TrafficStats(),
@@ -86,33 +102,42 @@ class TrafficSimulation:
         }
         self.traffic_light = TrafficLight(self.env)
         
-        # Start vehicle generators
+        # Start vehicle generators for each lane in each direction
         for direction in self.vehicles.keys():
-            self.env.process(self.generate_vehicles(direction))
+            for lane in range(NUM_LANES):
+                self.env.process(self.generate_vehicles(direction, lane))
 
     def update_stats(self):
         # Update waiting counts
-        for direction, vehicles in self.vehicles.items():
+        for direction, lanes in self.vehicles.items():
             stats = self.stats[direction]
-            stats.waiting_count = sum(1 for v in vehicles 
-                                    if not v.crossed_intersection 
-                                    and abs(v.position) < MINIMUM_FOLLOW_DISTANCE)
+            waiting_count = 0
+            for lane in lanes:
+                waiting_count += sum(1 for v in lane 
+                                   if not v.crossed_intersection 
+                                   and abs(v.position) < MINIMUM_FOLLOW_DISTANCE)
+            stats.waiting_count = waiting_count
 
-    def generate_vehicles(self, direction):
+    def generate_vehicles(self, direction, lane):
         id_counter = 0
         while True:
-            # Add new vehicle if there's space
-            if not self.vehicles[direction]:
-                vehicle = Vehicle(id_counter, direction)
-                self.vehicles[direction].append(vehicle)
-                id_counter += 1
-            else:
-                # Check if there's enough space from the last vehicle
-                last_vehicle = self.vehicles[direction][-1]
-                if abs(abs(last_vehicle.position) - OBSERVATION_ZONE_LENGTH) > MINIMUM_FOLLOW_DISTANCE:
-                    vehicle = Vehicle(id_counter, direction)
-                    self.vehicles[direction].append(vehicle)
+            # Get total number of vehicles across all lanes in all directions
+            num_vehicles = sum(sum(len(lane) for lane in lanes) for lanes in self.vehicles.values())
+            
+            # Only generate new vehicle if within 30% of target traffic volume
+            if num_vehicles <= TRAFFIC_VOLUME * 1.3:
+                # Add new vehicle if there's space
+                if not self.vehicles[direction][lane]:
+                    vehicle = Vehicle(id_counter, direction, lane)
+                    self.vehicles[direction][lane].append(vehicle)
                     id_counter += 1
+                else:
+                    # Check if there's enough space from the last vehicle
+                    last_vehicle = self.vehicles[direction][lane][-1]
+                    if abs(abs(last_vehicle.position) - OBSERVATION_ZONE_LENGTH) > MINIMUM_FOLLOW_DISTANCE:
+                        vehicle = Vehicle(id_counter, direction, lane)
+                        self.vehicles[direction][lane].append(vehicle)
+                        id_counter += 1
             
             # Random interval between vehicles based on average arrival rate
             yield self.env.timeout(random.expovariate(AVERAGE_ARRIVAL_RATE))
@@ -122,60 +147,106 @@ class TrafficSimulation:
         # Convert speed from mph to miles per timestep
         base_movement = AVERAGE_SPEED / 3600  # Convert from miles/hour to miles/second
         
-        for direction, vehicles in self.vehicles.items():
-            if not vehicles:
-                continue
-                
+        for direction, lanes in self.vehicles.items():
             light_group = "NS" if direction in ["north", "south"] else "EW"
             can_move = self.traffic_light.states[light_group] != "red" and self.traffic_light.states[light_group] != "yellow"
             
-            # Update each vehicle
-            for i, vehicle in enumerate(vehicles[:]):
-                # Vary movement speed randomly around average
-                movement_per_step = base_movement * (0.8 + 0.4 * random.random())  # Varies from 80% to 120% of average
+            # Right turns can proceed even on red if in rightmost lane
+            for lane_idx, vehicles in enumerate(lanes):
+                if not vehicles:
+                    continue
                 
-                # Start wait time tracking
-                if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE:
-                    if vehicle.wait_start is None:
-                        vehicle.wait_start = self.env.now
+                # Update each vehicle
+                for i, vehicle in enumerate(vehicles[:]):
+                    # Vary movement speed randomly around average
+                    movement_per_step = base_movement * (0.8 + 0.4 * random.random())  # Varies from 80% to 120% of average
+                    
+                    # Allow right turns on red for rightmost lane
+                    if vehicle.turning_right and lane_idx == NUM_LANES-1:
+                        can_move = True
+                    
+                    # Start wait time tracking
+                    if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE:
+                        if vehicle.wait_start is None:
+                            vehicle.wait_start = self.env.now
 
-                # Remove completed vehicles
-                if abs(vehicle.position) >= OBSERVATION_ZONE_LENGTH and vehicle.crossed_intersection:
-                    if vehicle.wait_start is not None:
-                        wait_time = self.env.now - vehicle.wait_start
-                        self.stats[direction].wait_times.append(wait_time)
-                    self.stats[direction].completed_count += 1
-                    vehicles.remove(vehicle)
-                    continue
-                
-                # Handle intersection crossing
-                if abs(vehicle.position) <= 0.1 and not vehicle.crossed_intersection:
-                    if can_move:
-                        vehicle.crossed_intersection = True
-                    if vehicle.wait_start is not None:
-                        vehicle.wait_start = None
-                    if not can_move:
+                    # Remove completed vehicles
+                    if abs(vehicle.position) >= OBSERVATION_ZONE_LENGTH and vehicle.crossed_intersection:
+                        if vehicle.wait_start is not None:
+                            wait_time = self.env.now - vehicle.wait_start
+                            self.stats[direction].wait_times.append(wait_time)
+                        self.stats[direction].completed_count += 1
+                        vehicles.remove(vehicle)
                         continue
-                
-                # Check for vehicle ahead
-                if i > 0:
-                    vehicle_ahead = vehicles[i-1]
-                    if abs(vehicle.position - vehicle_ahead.position) < MINIMUM_FOLLOW_DISTANCE:
-                        continue
-                
-                # Stop at red light near intersection
-                if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < 0.1:
-                    continue
-                
-                # Move vehicle using varied speed
-                if direction == "north":
-                    vehicle.position -= movement_per_step
-                elif direction == "south":
-                    vehicle.position += movement_per_step
-                elif direction == "east":
-                    vehicle.position -= movement_per_step
-                elif direction == "west":
-                    vehicle.position += movement_per_step
+                    
+                    # Handle intersection crossing
+                    if abs(vehicle.position) <= (0.1 * (NUM_LANES/2)) and not vehicle.crossed_intersection:
+                        if can_move:
+                            vehicle.crossed_intersection = True
+                        if vehicle.wait_start is not None:
+                            vehicle.wait_start = None
+                        if not can_move:
+                            continue
+                    
+                    # Check for vehicle ahead
+                    if i > 0:
+                        vehicle_ahead = vehicles[i-1]
+                        
+                        within_following_distance = not (abs(vehicle.position - vehicle_ahead.position) < MINIMUM_FOLLOW_DISTANCE)
+
+                        if vehicle_ahead.turning_right and vehicle_ahead.crossed_intersection:
+                            within_following_distance = True
+
+                        if not within_following_distance:
+                            continue
+                    
+                    # Stop at red light near intersection if not turning right
+                    if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < (0.1 * (NUM_LANES/2)):
+                        if not (vehicle.turning_right and lane_idx == NUM_LANES-1) or vehicle_ahead.turning_right:
+                            continue
+                    
+                    # Move vehicle using varied speed
+                    if direction == "north":
+                        if vehicle.turning_right and vehicle.crossed_intersection:
+                            # Move straight east after crossing intersection
+                            vehicle.x -= movement_per_step
+                            vehicle.position = 0.02 + (lane_idx * 0.04)
+
+                            # Remove vehicle if it exits observation zone
+                            if abs(vehicle.x) >= OBSERVATION_ZONE_LENGTH:
+                                vehicles.remove(vehicle)
+                        else:
+                            vehicle.position -= movement_per_step
+                    elif direction == "south":
+                        if vehicle.turning_right and vehicle.crossed_intersection:
+                            # Move straight west after crossing intersection
+                            vehicle.x += movement_per_step
+                            vehicle.position = -0.02 - (lane_idx * 0.04)
+                            
+                            if abs(vehicle.x) >= OBSERVATION_ZONE_LENGTH:
+                                vehicles.remove(vehicle)
+                        else:
+                            vehicle.position += movement_per_step
+                    elif direction == "east":
+                        if vehicle.turning_right and vehicle.crossed_intersection:
+                            # Move straight south after crossing intersection
+                            vehicle.y += movement_per_step
+                            vehicle.position = 0.02 + (lane_idx * 0.04)
+                            
+                            if abs(vehicle.y) >= OBSERVATION_ZONE_LENGTH:
+                                vehicles.remove(vehicle)
+                        else:
+                            vehicle.position -= movement_per_step
+                    elif direction == "west":
+                        if vehicle.turning_right and vehicle.crossed_intersection:
+                            # Move straight north after crossing intersection
+                            vehicle.y -= movement_per_step
+                            vehicle.position = -0.02 - (lane_idx * 0.04)
+                            
+                            if abs(vehicle.y) >= OBSERVATION_ZONE_LENGTH:
+                                vehicles.remove(vehicle)
+                        else:
+                            vehicle.position += movement_per_step
         
         self.update_stats()
         self.env.step()
@@ -186,9 +257,29 @@ def animate(frame_num, sim, ax, stats_ax):
     stats_ax.clear()
     
     # Draw roads with lane markings
-    road_width = 0.04
-    ax.add_patch(plt.Rectangle((-0.6, -road_width), 1.2, 2*road_width, color='gray'))
-    ax.add_patch(plt.Rectangle((-road_width, -0.6), 2*road_width, 1.2, color='gray'))
+    total_road_width = LANE_WIDTH * NUM_LANES
+    
+    # Draw north-south road
+    ax.add_patch(plt.Rectangle((-0.6, -total_road_width), 1.2, 2*total_road_width, color='gray'))
+    
+    # Draw east-west road
+    ax.add_patch(plt.Rectangle((-total_road_width, -0.6), 2*total_road_width, 1.2, color='gray'))
+    
+    # Draw lane dividers for north-south lanes
+    for i in range(1, NUM_LANES):
+        offset = i * LANE_WIDTH
+        # North lanes
+        ax.axhline(y=offset, xmin=0.3, xmax=0.7, color='white', linestyle='-')
+        # South lanes
+        ax.axhline(y=-offset, xmin=0.3, xmax=0.7, color='white', linestyle='-')
+    
+    # Draw lane dividers for east-west lanes
+    for i in range(1, NUM_LANES):
+        offset = i * LANE_WIDTH
+        # East lanes
+        ax.axvline(x=offset, ymin=0.3, ymax=0.7, color='white', linestyle='-')
+        # West lanes
+        ax.axvline(x=-offset, ymin=0.3, ymax=0.7, color='white', linestyle='-')
     
     # Draw lane markers
     marker_style = dict(color='white', linestyle='--', linewidth=1)
@@ -214,16 +305,19 @@ def animate(frame_num, sim, ax, stats_ax):
     ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=4)
     
     # Draw vehicles
-    for direction, vehicles in sim.vehicles.items():
-        for vehicle in vehicles:
-            if direction == "north":
-                ax.plot(vehicle.lane_offset, vehicle.position, 'bo', markersize=8)
-            elif direction == "south":
-                ax.plot(-vehicle.lane_offset, vehicle.position, 'bo', markersize=8)
-            elif direction == "east":
-                ax.plot(vehicle.position, vehicle.lane_offset, 'bo', markersize=8)
-            else:  # west
-                ax.plot(vehicle.position, -vehicle.lane_offset, 'bo', markersize=8)
+    for direction, lanes in sim.vehicles.items():
+        for lane_idx, vehicles in enumerate(lanes):
+            for vehicle in vehicles:
+                # Use red color for turning vehicles
+                color = 'red' if vehicle.turning_right else 'blue'
+                if direction == "north":
+                    ax.plot(vehicle.x, vehicle.position, 'o', color=color, markersize=8)
+                elif direction == "south":
+                    ax.plot(vehicle.x, vehicle.position, 'o', color=color, markersize=8)
+                elif direction == "east":
+                    ax.plot(vehicle.position, vehicle.y, 'o', color=color, markersize=8)
+                else:  # west
+                    ax.plot(vehicle.position, vehicle.y, 'o', color=color, markersize=8)
     
     ax.set_xlim(-0.6, 0.6)
     ax.set_ylim(-0.6, 0.6)
@@ -243,7 +337,7 @@ def animate(frame_num, sim, ax, stats_ax):
         
         text = (
             f"{direction}:\n"
-            f"  Current Volume: {len(sim.vehicles[dir_lower])}\n"
+            f"  Current Volume: {sum(len(lane) for lane in sim.vehicles[dir_lower])}\n"
             f"  Waiting at Light: {stats.waiting_count}\n"
             f"  Avg Wait Time: {avg_wait:.1f}s\n"
             f"  Total Completed: {stats.completed_count}"
@@ -273,4 +367,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# @todo set global variables
+# @todo fix edge case where blue after red car goes through intersection even on red light
