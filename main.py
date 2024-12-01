@@ -3,13 +3,14 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from collections import defaultdict
+from collections import defaultdict, deque
 
 class Vehicle:
     def __init__(self, id: int, direction: str):
         self.id = id
         self.direction = direction
         self.lane_offset = 0.02  # Offset for passing
+        self.wait_start = None
         
         # Set initial position and offset based on direction
         if direction == "north":
@@ -28,6 +29,12 @@ class Vehicle:
         self.speed = 0.01
         self.crossed_intersection = False
         self.completed = False
+
+class TrafficStats:
+    def __init__(self):
+        self.completed_count = 0
+        self.wait_times = deque(maxlen=50)  # Rolling window of recent wait times
+        self.waiting_count = 0
 
 class TrafficLight:
     def __init__(self, env):
@@ -62,12 +69,26 @@ class TrafficSimulation:
             "east": [],
             "west": []
         }
+        self.stats = {
+            "north": TrafficStats(),
+            "south": TrafficStats(),
+            "east": TrafficStats(),
+            "west": TrafficStats()
+        }
         self.traffic_light = TrafficLight(self.env)
         
         # Start vehicle generators
         for direction in self.vehicles.keys():
             self.env.process(self.generate_vehicles(direction))
-    
+
+    def update_stats(self):
+        # Update waiting counts
+        for direction, vehicles in self.vehicles.items():
+            stats = self.stats[direction]
+            stats.waiting_count = sum(1 for v in vehicles 
+                                    if not v.crossed_intersection 
+                                    and abs(v.position) < 0.15)
+
     def generate_vehicles(self, direction):
         id_counter = 0
         while True:
@@ -98,8 +119,17 @@ class TrafficSimulation:
             
             # Update each vehicle
             for vehicle in vehicles[:]:
+                # Start wait time tracking
+                if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < 0.15:
+                    if vehicle.wait_start is None:
+                        vehicle.wait_start = self.env.now
+
                 # Remove completed vehicles
                 if abs(vehicle.position) >= 0.5 and vehicle.crossed_intersection:
+                    if vehicle.wait_start is not None:
+                        wait_time = self.env.now - vehicle.wait_start
+                        self.stats[direction].wait_times.append(wait_time)
+                    self.stats[direction].completed_count += 1
                     vehicles.remove(vehicle)
                     continue
                 
@@ -107,8 +137,8 @@ class TrafficSimulation:
                 if abs(vehicle.position) <= 0.05 and not vehicle.crossed_intersection:
                     if can_move:
                         vehicle.crossed_intersection = True
-                        # Continue in same direction but opposite side
                         vehicle.position = -0.05 if vehicle.position > 0 else 0.05
+                        vehicle.wait_start = None
                     continue
                 
                 # Stop at red light near intersection
@@ -125,44 +155,43 @@ class TrafficSimulation:
                 elif direction == "west":
                     vehicle.position += vehicle.speed
         
+        self.update_stats()
         self.env.step()
 
-def animate(frame_num, sim, ax):
+def animate(frame_num, sim, ax, stats_ax):
     sim.update()
     ax.clear()
+    stats_ax.clear()
     
     # Draw roads with lane markings
     road_width = 0.04
-    # Horizontal road
     ax.add_patch(plt.Rectangle((-0.6, -road_width), 1.2, 2*road_width, color='gray'))
-    # Vertical road
     ax.add_patch(plt.Rectangle((-road_width, -0.6), 2*road_width, 1.2, color='gray'))
     
     # Draw lane markers
     marker_style = dict(color='white', linestyle='--', linewidth=1)
-    ax.axhline(y=0, **marker_style)  # Horizontal center line
-    ax.axvline(x=0, **marker_style)  # Vertical center line
+    ax.axhline(y=0, **marker_style)
+    ax.axvline(x=0, **marker_style)
     
     # Draw traffic lights
     ns_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["NS"]]
     ew_color = {"green": "green", "yellow": "yellow", "red": "red"}[sim.traffic_light.states["EW"]]
     
-    # Reduced light offset for more inner placement
-    light_offset = 0.06  # Reduced from 0.12
+    light_offset = 0.06
     
     # Traffic light boxes
-    ax.add_patch(plt.Rectangle((-0.01, light_offset-0.01), 0.02, 0.02, color='black'))  # North
-    ax.add_patch(plt.Rectangle((-0.01, -light_offset-0.01), 0.02, 0.02, color='black'))  # South
-    ax.add_patch(plt.Rectangle((light_offset-0.01, -0.01), 0.02, 0.02, color='black'))  # East
-    ax.add_patch(plt.Rectangle((-light_offset-0.01, -0.01), 0.02, 0.02, color='black'))  # West
+    ax.add_patch(plt.Rectangle((-0.01, light_offset-0.01), 0.02, 0.02, color='black'))
+    ax.add_patch(plt.Rectangle((-0.01, -light_offset-0.01), 0.02, 0.02, color='black'))
+    ax.add_patch(plt.Rectangle((light_offset-0.01, -0.01), 0.02, 0.02, color='black'))
+    ax.add_patch(plt.Rectangle((-light_offset-0.01, -0.01), 0.02, 0.02, color='black'))
     
-    # Traffic light colors - smaller markers for more compact appearance
-    ax.plot(0, light_offset, marker='o', color=ns_color, markersize=4)  # North
-    ax.plot(0, -light_offset, marker='o', color=ns_color, markersize=4)  # South
-    ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=4)  # East
-    ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=4)  # West
+    # Traffic light colors
+    ax.plot(0, light_offset, marker='o', color=ns_color, markersize=4)
+    ax.plot(0, -light_offset, marker='o', color=ns_color, markersize=4)
+    ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=4)
+    ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=4)
     
-    # Draw vehicles with offset lanes
+    # Draw vehicles
     for direction, vehicles in sim.vehicles.items():
         for vehicle in vehicles:
             if direction == "north":
@@ -176,17 +205,42 @@ def animate(frame_num, sim, ax):
     
     ax.set_xlim(-0.6, 0.6)
     ax.set_ylim(-0.6, 0.6)
-    ax.set_title(f"Traffic Flow Simulation\nTime: {sim.env.now:.1f}s")
+    ax.set_title("Traffic Flow Simulation")
     ax.grid(True)
     ax.set_aspect('equal')
+    
+    # Draw statistics
+    stats_ax.axis('off')
+    y_pos = 0.95
+    stats_ax.text(0.5, 1.0, f"Time: {sim.env.now:.1f}s", ha='center', va='top')
+    
+    for direction in ["North", "South", "East", "West"]:
+        dir_lower = direction.lower()
+        stats = sim.stats[dir_lower]
+        avg_wait = np.mean(stats.wait_times) if stats.wait_times else 0
+        
+        text = (
+            f"{direction}:\n"
+            f"  Current Volume: {len(sim.vehicles[dir_lower])}\n"
+            f"  Waiting at Light: {stats.waiting_count}\n"
+            f"  Avg Wait Time: {avg_wait:.1f}s\n"
+            f"  Total Completed: {stats.completed_count}"
+        )
+        stats_ax.text(0.1, y_pos, text, va='top', fontsize=9)
+        y_pos -= 0.25
 
 def main():
+    # Create figure with two subplots
     sim = TrafficSimulation()
-    fig, ax = plt.subplots(figsize=(8, 8))
+    fig = plt.figure(figsize=(15, 8))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.5, 1])
+    ax = fig.add_subplot(gs[0, 0])
+    stats_ax = fig.add_subplot(gs[0, 1])
+    
     ani = FuncAnimation(
         fig,
         animate,
-        fargs=(sim, ax),
+        fargs=(sim, ax, stats_ax),
         interval=50,
         frames=None,
         repeat=False
