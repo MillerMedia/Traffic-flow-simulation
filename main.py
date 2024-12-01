@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 
 NUM_LANES = 2
 GREEN_DURATION = 30  # ✅
-YELLOW_DURATION = 5  # ✅
+YELLOW_DURATION = 7  # ✅
 OBSERVATION_ZONE_LENGTH = 0.5 # ✅
 AVERAGE_SPEED = 30 # ✅
 AVERAGE_ARRIVAL_RATE = 0.5  # ✅
@@ -160,7 +160,7 @@ class TrafficSimulation:
                 # Check for vehicle ahead
                 if i > 0:
                     vehicle_ahead = vehicles[i-1]
-                    if abs(abs(vehicle.position) - abs(vehicle_ahead.position)) < MINIMUM_FOLLOW_DISTANCE:
+                    if abs(vehicle.position - vehicle_ahead.position) < MINIMUM_FOLLOW_DISTANCE:
                         continue
                 
                 # Stop at red light near intersection
