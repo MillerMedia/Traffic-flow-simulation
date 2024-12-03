@@ -110,6 +110,40 @@ class TrafficSimulation:
             for lane in range(NUM_LANES):
                 self.env.process(self.generate_vehicles(direction, lane))
 
+        # Initialize decorative elements
+        self.decorations = self._init_decorations()
+
+    def _init_decorations(self):
+        building_colors = ['#A0522D', '#8B4513', '#6B4423', '#CD853F']  # Brown shades
+        building_positions = {
+            'ne_buildings': [(0.15 + (i * 0.12), 0.15) for i in range(4)],
+            'sw_buildings': [(-0.15 - (i * 0.12), 0.05) for i in range(3)],
+            'se_buildings': [(0.15 + (i * 0.12), 0.15) for i in range(3)]  # Adjusted to align the top of SE buildings
+        }
+        decorations = {
+            'nw_trees': [(random.uniform(-0.45, -0.15), random.uniform(0.15, 0.45)) 
+                        for _ in range(15)],
+            'ne_buildings': [(0.15 + (i * 0.12), 0.15, 
+                            random.uniform(0.08, 0.15), random.uniform(0.08, 0.15),
+                            random.choice(building_colors)) 
+                           for i in range(4)],
+            'sw_buildings': [],
+            'se_buildings': [],
+            'se_trees': [(random.uniform(0.15, 0.45), random.uniform(-0.45, -0.15)) 
+                        for _ in range(8)],
+            'ne_trees': [(random.uniform(0.15, 0.45), random.uniform(0.15, 0.45)) 
+                        for _ in range(12)],
+            'sw_trees': [(random.uniform(-0.45, -0.15), random.uniform(-0.45, -0.15)) 
+                        for _ in range(12)]
+        }
+        # Remove trees that overlap with buildings
+        for tree_group in ['nw_trees', 'se_trees', 'ne_trees', 'sw_trees']:
+            decorations[tree_group] = [tree for tree in decorations[tree_group] 
+                                       if not any(abs(tree[0] - building[0]) < 0.15 and abs(tree[1] - building[1]) < 0.15 
+                                                  for building_group, buildings in building_positions.items() 
+                                                  for building in buildings)]
+        return decorations
+
     def update_stats(self):
         # Update waiting counts
         for direction, lanes in self.vehicles.items():
@@ -313,6 +347,19 @@ def animate(frame_num, sim, ax, stats_ax):
     ax.plot(light_offset, 0, marker='o', color=ew_color, markersize=4)
     ax.plot(-light_offset, 0, marker='o', color=ew_color, markersize=4)
     
+    # Add decorative elements in corners
+    tree_green = '#228B22'
+    
+    # Trees in all corners
+    for tree_group in ['nw_trees', 'se_trees', 'ne_trees', 'sw_trees']:
+        for x, y in sim.decorations[tree_group]:
+            ax.add_patch(plt.Circle((x, y), 0.02, color=tree_green))
+    
+    # Buildings
+    for building_group in ['ne_buildings', 'sw_buildings', 'se_buildings']:
+        for x, y, width, height, color in sim.decorations[building_group]:
+            ax.add_patch(plt.Rectangle((x, y), width, height, color=color))
+
     # Draw vehicles
     for direction, lanes in sim.vehicles.items():
         for lane_idx, vehicles in enumerate(lanes):
