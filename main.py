@@ -16,9 +16,12 @@ AVERAGE_SPEED = 60
 TRAFFIC_VOLUME = 25 # Average total number of cars at intersection per minute
 AVERAGE_ARRIVAL_RATE = 60/TRAFFIC_VOLUME # per second arrival rate
 
-MINIMUM_FOLLOW_DISTANCE = 0.05
+CAR_LENGTH = 0.04
+MINIMUM_FOLLOW_DISTANCE = 0.05 + (CAR_LENGTH/2)
 
 TURN_PROBABILITY = 0.7  # 30% chance for right lane vehicles to turn right
+
+
 
 class Vehicle:
     def __init__(self, id: int, direction: str, lane: int):
@@ -190,7 +193,10 @@ class TrafficSimulation:
                     
                     # Check for vehicle ahead
                     if i > 0:
-                        vehicle_ahead = vehicles[i-1]
+                        try:
+                            vehicle_ahead = vehicles[i-1]
+                        except IndexError:
+                            continue
                         
                         within_following_distance = not (abs(vehicle.position - vehicle_ahead.position) < MINIMUM_FOLLOW_DISTANCE)
 
@@ -201,7 +207,10 @@ class TrafficSimulation:
                             continue
                     
                     # Stop at red light near intersection if not turning right
-                    if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < (0.1 * (NUM_LANES/2)):
+
+                    # Position before intersection to stop at
+                    stop_position = 0.1 * (NUM_LANES/2) + CAR_LENGTH
+                    if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < stop_position:
                         if not (vehicle.turning_right and lane_idx == NUM_LANES-1) or vehicle_ahead.turning_right:
                             continue
                     
@@ -310,14 +319,40 @@ def animate(frame_num, sim, ax, stats_ax):
             for vehicle in vehicles:
                 # Use red color for turning vehicles
                 color = 'red' if vehicle.turning_right else 'blue'
-                if direction == "north":
-                    ax.plot(vehicle.x, vehicle.position, 'o', color=color, markersize=8)
-                elif direction == "south":
-                    ax.plot(vehicle.x, vehicle.position, 'o', color=color, markersize=8)
-                elif direction == "east":
-                    ax.plot(vehicle.position, vehicle.y, 'o', color=color, markersize=8)
-                else:  # west
-                    ax.plot(vehicle.position, vehicle.y, 'o', color=color, markersize=8)
+                
+                # Create simple car shape - just a rectangle
+                car_width = 0.02   # Width of car
+                
+                if direction in ["north", "south"]:
+                    x = vehicle.x
+                    y = vehicle.position
+                    # Determine if car should be drawn horizontally or vertically
+                    if vehicle.turning_right and vehicle.crossed_intersection:
+                        # Draw horizontally for turned vehicles
+                        rect = plt.Rectangle((x - CAR_LENGTH/2, y - car_width/2),
+                                          CAR_LENGTH, car_width,
+                                          color=color)
+                    else:
+                        # Draw vertically for straight vehicles
+                        rect = plt.Rectangle((x - car_width/2, y - CAR_LENGTH/2), 
+                                          car_width, CAR_LENGTH, 
+                                          color=color)
+                    ax.add_patch(rect)
+                    
+                else:  # east or west
+                    x = vehicle.position
+                    y = vehicle.y
+                    if vehicle.turning_right and vehicle.crossed_intersection:
+                        # Draw vertically for turned vehicles
+                        rect = plt.Rectangle((x - car_width/2, y - CAR_LENGTH/2),
+                                          car_width, CAR_LENGTH,
+                                          color=color)
+                    else:
+                        # Draw horizontally for straight vehicles
+                        rect = plt.Rectangle((x - CAR_LENGTH/2, y - car_width/2),
+                                          CAR_LENGTH, car_width,
+                                          color=color)
+                    ax.add_patch(rect)
     
     ax.set_xlim(-0.6, 0.6)
     ax.set_ylim(-0.6, 0.6)
