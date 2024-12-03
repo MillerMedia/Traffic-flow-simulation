@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
-NUM_LANES = 1 # In each direction ✅
+DEBUG = False
+
+NUM_LANES = 2 # In each direction ✅
 LANE_WIDTH = 0.04
 
 GREEN_DURATION = 30
@@ -19,7 +21,7 @@ AVERAGE_ARRIVAL_RATE = 60/TRAFFIC_VOLUME # per second arrival rate
 CAR_LENGTH = 0.04
 MINIMUM_FOLLOW_DISTANCE = 0.05 + (CAR_LENGTH/2)
 
-TURN_PROBABILITY = 0.7  # 30% chance for right lane vehicles to turn right
+TURN_PROBABILITY = 0.3  # 30% chance for right lane vehicles to turn right
 
 class Vehicle:
     def __init__(self, id: int, direction: str, lane: int):
@@ -75,7 +77,7 @@ class Vehicle:
         self.is_waiting = not has_moved
         
         # Debug status change
-        if was_waiting != self.is_waiting:
+        if was_waiting != self.is_waiting and DEBUG:
             print(f"Vehicle {self.id} waiting status changed from {was_waiting} to {self.is_waiting}")
             print(f"  Current pos: {current_position:.6f}, Last pos: {self.last_position:.6f}")
         
@@ -196,9 +198,10 @@ class TrafficSimulation:
                 last_waiting_pos = None
                 
                 for vehicle in lane:
-                    print(f"Checking {direction} vehicle {vehicle.id}:")
-                    print(f"  Position: {vehicle.position:.4f}")
-                    print(f"  Light is red: {is_red}")
+                    if DEBUG:
+                        print(f"Checking {direction} vehicle {vehicle.id}:")
+                        print(f"  Position: {vehicle.position:.4f}")
+                        print(f"  Light is red: {is_red}")
                     
                     is_in_zone = abs(vehicle.position) <= INTERSECTION_ZONE
                     is_right_turner = vehicle.turning_right and lane_idx == NUM_LANES-1
@@ -209,7 +212,8 @@ class TrafficSimulation:
                     # 1. At red light in intersection zone
                     if is_in_zone and is_red and not is_right_turner and not vehicle.crossed_intersection:
                         should_wait = True
-                        print(f"  Waiting at red light")
+                        if DEBUG:
+                            print(f"  Waiting at red light")
                     
                     # 2. Queued behind another waiting vehicle
                     elif last_waiting_pos is not None:
@@ -217,14 +221,17 @@ class TrafficSimulation:
                         min_spacing = MINIMUM_FOLLOW_DISTANCE + max(vehicle.length, CAR_LENGTH)/2
                         if dist_to_prev <= min_spacing:
                             should_wait = True
-                            print(f"  Queued behind vehicle")
+                            if DEBUG:
+                                print(f"  Queued behind vehicle")
                     
                     if should_wait:
                         waiting_count += 1
                         last_waiting_pos = abs(vehicle.position)
-                        print(f"  COUNTED AS WAITING")
+                        if DEBUG:
+                            print(f"  COUNTED AS WAITING")
             
-            print(f"{direction.upper()} Total Waiting: {waiting_count}")
+            if DEBUG:
+                print(f"{direction.upper()} Total Waiting: {waiting_count}")
             stats.waiting_count = waiting_count
 
     def generate_vehicles(self, direction, lane):
@@ -382,11 +389,13 @@ class TrafficSimulation:
                     if vehicle.is_waiting and not vehicle.crossed_intersection and is_at_intersection:
                         if vehicle.wait_start is None:
                             vehicle.wait_start = self.env.now
-                            print(f"Starting wait for vehicle {vehicle.id} in {direction}")
+                            if DEBUG:
+                                print(f"Starting wait for vehicle {vehicle.id} in {direction}")
                             self.stats[direction].start_waiting(vehicle.id, self.env.now)
                     else:
                         if vehicle.wait_start is not None:
-                            print(f"Stopping wait for vehicle {vehicle.id} in {direction}")
+                            if DEBUG:
+                                print(f"Stopping wait for vehicle {vehicle.id} in {direction}")
                             self.stats[direction].stop_waiting(vehicle.id, self.env.now)
                             vehicle.wait_start = None
             
@@ -551,5 +560,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# @todo fix edge case where blue after red car goes through intersection even on red light
