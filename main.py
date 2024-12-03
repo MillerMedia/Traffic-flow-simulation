@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
-NUM_LANES = 2 # In each direction ✅
+NUM_LANES = 1 # In each direction ✅
 LANE_WIDTH = 0.04
 
-GREEN_DURATION = 5
+GREEN_DURATION = 30
 YELLOW_DURATION = 2
 OBSERVATION_ZONE_LENGTH = 0.5 # @todo can we change the size of the map when adjusting this
 AVERAGE_SPEED = 60
@@ -27,6 +27,9 @@ class Vehicle:
         self.direction = direction
         self.lane = lane
         self.wait_start = None
+        self.stop_count = 0
+        self.is_waiting = False  # New flag to track if vehicle is currently stopped
+        self.last_position = None  # To track if vehicle has moved
         
         # 95% chance of normal length, 5% chance of larger length
         if random.random() < 0.95:
@@ -51,6 +54,7 @@ class Vehicle:
             self.position = -OBSERVATION_ZONE_LENGTH  # Start at left
             self.y = -lane_offset  # Offset based on lane (right side)
         
+        self.last_position = self.position  # Initialize last position
         self.speed = 0.01
         self.crossed_intersection = False
         self.completed = False
@@ -60,6 +64,22 @@ class Vehicle:
         
         # Track turning progress
         self.turn_progress = 0  # 0 to 1 for turn animation
+
+    def update_waiting_status(self, current_position):
+        # Check if vehicle has moved by comparing positions
+        MOVEMENT_THRESHOLD = 0.00001  # Small threshold
+        has_moved = abs(current_position - self.last_position) > MOVEMENT_THRESHOLD
+        
+        # Update waiting status
+        was_waiting = self.is_waiting
+        self.is_waiting = not has_moved
+        
+        # Debug status change
+        if was_waiting != self.is_waiting:
+            print(f"Vehicle {self.id} waiting status changed from {was_waiting} to {self.is_waiting}")
+            print(f"  Current pos: {current_position:.6f}, Last pos: {self.last_position:.6f}")
+        
+        self.last_position = current_position
 
 class TrafficStats:
     def __init__(self):
@@ -163,34 +183,48 @@ class TrafficSimulation:
         # Update waiting counts for each direction
         for direction, lanes in self.vehicles.items():
             stats = self.stats[direction]
-            light_group = "NS" if direction in ["north", "south"] else "EW"
-            light_state = self.traffic_light.states[light_group]
-            can_move = light_state not in ["red", "yellow"]
-            
             waiting_count = 0
             
-            for lane_idx, vehicles in enumerate(lanes):
-                for vehicle in vehicles:
-                    # A vehicle is considered waiting if:
-                    # 1. It hasn't crossed the intersection yet
-                    # 2. It's within the waiting zone
-                    # 3. Either:
-                    #    - The light is red/yellow and it's not turning right
-                    #    - OR there's a vehicle ahead of it that's also waiting
-                    in_waiting_zone = abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE
-                    is_waiting = False
+            # Define waiting zone parameters
+            INTERSECTION_ZONE = 0.15  # Width of the intersection zone
+            
+            light_group = "NS" if direction in ["north", "south"] else "EW"
+            is_red = self.traffic_light.states[light_group] == "red"
+            
+            for lane_idx, lane in enumerate(lanes):
+                # Keep track of last waiting vehicle's position for each lane
+                last_waiting_pos = None
+                
+                for vehicle in lane:
+                    print(f"Checking {direction} vehicle {vehicle.id}:")
+                    print(f"  Position: {vehicle.position:.4f}")
+                    print(f"  Light is red: {is_red}")
                     
-                    if not vehicle.crossed_intersection and in_waiting_zone:
-                        # Check if vehicle should be waiting due to traffic light
-                        if not can_move and not (vehicle.turning_right and lane_idx == NUM_LANES-1):
-                            is_waiting = True
-                            stats.start_waiting(vehicle.id, self.env.now)
-                        else:
-                            stats.stop_waiting(vehicle.id, self.env.now)
+                    is_in_zone = abs(vehicle.position) <= INTERSECTION_ZONE
+                    is_right_turner = vehicle.turning_right and lane_idx == NUM_LANES-1
                     
-                    if is_waiting:
+                    should_wait = False
+                    
+                    # Check if vehicle should be counted as waiting:
+                    # 1. At red light in intersection zone
+                    if is_in_zone and is_red and not is_right_turner and not vehicle.crossed_intersection:
+                        should_wait = True
+                        print(f"  Waiting at red light")
+                    
+                    # 2. Queued behind another waiting vehicle
+                    elif last_waiting_pos is not None:
+                        dist_to_prev = abs(abs(vehicle.position) - abs(last_waiting_pos))
+                        min_spacing = MINIMUM_FOLLOW_DISTANCE + max(vehicle.length, CAR_LENGTH)/2
+                        if dist_to_prev <= min_spacing:
+                            should_wait = True
+                            print(f"  Queued behind vehicle")
+                    
+                    if should_wait:
                         waiting_count += 1
-                    
+                        last_waiting_pos = abs(vehicle.position)
+                        print(f"  COUNTED AS WAITING")
+            
+            print(f"{direction.upper()} Total Waiting: {waiting_count}")
             stats.waiting_count = waiting_count
 
     def generate_vehicles(self, direction, lane):
@@ -220,6 +254,17 @@ class TrafficSimulation:
     def update(self):
         # Move vehicles based on traffic light state
         base_movement = AVERAGE_SPEED / 3600  # Convert from miles/hour to miles/second
+
+        # Store initial positions for all vehicles
+        for direction, lanes in self.vehicles.items():
+            for lane in lanes:
+                for vehicle in lane:
+                    # Only initialize last_position if it hasn't been set
+                    if vehicle.last_position is None:
+                        vehicle.last_position = vehicle.position
+                    else:
+                        # Store current position before movement
+                        old_pos = vehicle.position
         
         for direction, lanes in self.vehicles.items():
             light_group = "NS" if direction in ["north", "south"] else "EW"
@@ -231,6 +276,9 @@ class TrafficSimulation:
                     continue
                 
                 for i, vehicle in enumerate(vehicles[:]):
+                    # Store current position to check if vehicle moves
+                    initial_position = vehicle.position
+
                     # Vary movement speed randomly around average
                     movement_per_step = base_movement * (0.8 + 0.4 * random.random())
                     
@@ -323,6 +371,24 @@ class TrafficSimulation:
                                 vehicles.remove(vehicle)
                         else:
                             vehicle.position += movement_per_step
+                    
+                    # After all movement logic, update waiting status with the actual new position
+                    vehicle.update_waiting_status(vehicle.position)
+                    
+                    # Update wait time tracking if near intersection
+                    stop_position = 0.1 * (NUM_LANES/2) + CAR_LENGTH
+                    is_at_intersection = abs(vehicle.position) <= stop_position
+                    
+                    if vehicle.is_waiting and not vehicle.crossed_intersection and is_at_intersection:
+                        if vehicle.wait_start is None:
+                            vehicle.wait_start = self.env.now
+                            print(f"Starting wait for vehicle {vehicle.id} in {direction}")
+                            self.stats[direction].start_waiting(vehicle.id, self.env.now)
+                    else:
+                        if vehicle.wait_start is not None:
+                            print(f"Stopping wait for vehicle {vehicle.id} in {direction}")
+                            self.stats[direction].stop_waiting(vehicle.id, self.env.now)
+                            vehicle.wait_start = None
             
             self.update_stats()
             self.env.step()
@@ -451,12 +517,13 @@ def animate(frame_num, sim, ax, stats_ax):
     for direction in ["North", "South", "East", "West"]:
         dir_lower = direction.lower()
         stats = sim.stats[dir_lower]
-        avg_wait = np.mean(stats.wait_times) if stats.wait_times else 0
+        avg_wait = np.mean(list(stats.wait_times)) if stats.wait_times else 0
+        current_waiting = stats.waiting_count  # Use the actual count
         
         text = (
             f"{direction}:\n"
             f"  Current Volume: {sum(len(lane) for lane in sim.vehicles[dir_lower])}\n"
-            f"  Waiting at Light: {stats.waiting_count}\n"
+            f"  Waiting at Light: {current_waiting}\n"
             f"  Avg Wait Time: {avg_wait:.1f}s\n"
             f"  Total Completed: {stats.completed_count}"
         )
