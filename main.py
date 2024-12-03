@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
-NUM_LANES = 2 # In each direction ✅
+NUM_LANES = 3 # In each direction ✅
 LANE_WIDTH = 0.04
 
 GREEN_DURATION = 5
@@ -62,6 +62,17 @@ class TrafficStats:
         self.completed_count = 0
         self.wait_times = deque(maxlen=50)  # Rolling window of recent wait times
         self.waiting_count = 0
+        self.current_waiting = {}  # Track currently waiting vehicles by ID
+
+    def start_waiting(self, vehicle_id, time):
+        if vehicle_id not in self.current_waiting:
+            self.current_waiting[vehicle_id] = time
+
+    def stop_waiting(self, vehicle_id, current_time):
+        if vehicle_id in self.current_waiting:
+            wait_time = current_time - self.current_waiting[vehicle_id]
+            self.wait_times.append(wait_time)
+            del self.current_waiting[vehicle_id]
 
 class TrafficLight:
     def __init__(self, env):
@@ -181,29 +192,30 @@ class TrafficSimulation:
     
     def update(self):
         # Move vehicles based on traffic light state
-        # Convert speed from mph to miles per timestep
         base_movement = AVERAGE_SPEED / 3600  # Convert from miles/hour to miles/second
         
         for direction, lanes in self.vehicles.items():
             light_group = "NS" if direction in ["north", "south"] else "EW"
-            can_move = self.traffic_light.states[light_group] != "red" and self.traffic_light.states[light_group] != "yellow"
+            light_state = self.traffic_light.states[light_group]
+            can_move = light_state not in ["red", "yellow"]
             
-            # Right turns can proceed even on red if in rightmost lane
             for lane_idx, vehicles in enumerate(lanes):
                 if not vehicles:
                     continue
                 
-                # Update each vehicle
                 for i, vehicle in enumerate(vehicles[:]):
                     # Vary movement speed randomly around average
-                    movement_per_step = base_movement * (0.8 + 0.4 * random.random())  # Varies from 80% to 120% of average
+                    movement_per_step = base_movement * (0.8 + 0.4 * random.random())
                     
-                    # Allow right turns on red for rightmost lane
+                    # Check if this vehicle can proceed through intersection
+                    allow_movement = can_move
+                    
+                    # Right turns can proceed on red if in rightmost lane
                     if vehicle.turning_right and lane_idx == NUM_LANES-1:
-                        can_move = True
+                        allow_movement = True
                     
                     # Start wait time tracking
-                    if not can_move and not vehicle.crossed_intersection and abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE:
+                    if not allow_movement and not vehicle.crossed_intersection and abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE:
                         if vehicle.wait_start is None:
                             vehicle.wait_start = self.env.now
 
@@ -218,81 +230,73 @@ class TrafficSimulation:
                     
                     # Handle intersection crossing
                     if abs(vehicle.position) <= (0.1 * (NUM_LANES/2)) and not vehicle.crossed_intersection:
-                        if can_move:
+                        # Only allow crossing if:
+                        # 1. Light is green OR
+                        # 2. Vehicle is turning right in rightmost lane
+                        if allow_movement:
                             vehicle.crossed_intersection = True
-                        if vehicle.wait_start is not None:
                             vehicle.wait_start = None
-                        if not can_move:
+                        else:
                             continue
                     
                     # Check for vehicle ahead
                     if i > 0:
                         try:
                             vehicle_ahead = vehicles[i-1]
+                            within_following_distance = abs(vehicle.position - vehicle_ahead.position) >= MINIMUM_FOLLOW_DISTANCE
+
+                            # Special case: if vehicle ahead is turning and has crossed, we can move
+                            if vehicle_ahead.turning_right and vehicle_ahead.crossed_intersection:
+                                within_following_distance = True
+                            
+                            if not within_following_distance:
+                                continue
+                                
                         except IndexError:
                             continue
-                        
-                        within_following_distance = not (abs(vehicle.position - vehicle_ahead.position) < MINIMUM_FOLLOW_DISTANCE)
-
-                        if vehicle_ahead.turning_right and vehicle_ahead.crossed_intersection:
-                            within_following_distance = True
-
-                        if not within_following_distance:
-                            continue
                     
-                    # Stop at red light near intersection if not turning right
-
-                    # Position before intersection to stop at
+                    # Stop at red light near intersection
                     stop_position = 0.1 * (NUM_LANES/2) + CAR_LENGTH
-                    if not vehicle.crossed_intersection and not can_move and abs(vehicle.position) < stop_position:
-                        if not (vehicle.turning_right and lane_idx == NUM_LANES-1) or vehicle_ahead.turning_right:
+                    if not vehicle.crossed_intersection and abs(vehicle.position) < stop_position:
+                        if not allow_movement:
                             continue
                     
                     # Move vehicle using varied speed
                     if direction == "north":
                         if vehicle.turning_right and vehicle.crossed_intersection:
-                            # Move straight east after crossing intersection
                             vehicle.x -= movement_per_step
                             vehicle.position = 0.02 + (lane_idx * 0.04)
-
-                            # Remove vehicle if it exits observation zone
                             if abs(vehicle.x) >= OBSERVATION_ZONE_LENGTH:
                                 vehicles.remove(vehicle)
                         else:
                             vehicle.position -= movement_per_step
                     elif direction == "south":
                         if vehicle.turning_right and vehicle.crossed_intersection:
-                            # Move straight west after crossing intersection
                             vehicle.x += movement_per_step
                             vehicle.position = -0.02 - (lane_idx * 0.04)
-                            
                             if abs(vehicle.x) >= OBSERVATION_ZONE_LENGTH:
                                 vehicles.remove(vehicle)
                         else:
                             vehicle.position += movement_per_step
                     elif direction == "east":
                         if vehicle.turning_right and vehicle.crossed_intersection:
-                            # Move straight south after crossing intersection
                             vehicle.y += movement_per_step
                             vehicle.position = 0.02 + (lane_idx * 0.04)
-                            
                             if abs(vehicle.y) >= OBSERVATION_ZONE_LENGTH:
                                 vehicles.remove(vehicle)
                         else:
                             vehicle.position -= movement_per_step
                     elif direction == "west":
                         if vehicle.turning_right and vehicle.crossed_intersection:
-                            # Move straight north after crossing intersection
                             vehicle.y -= movement_per_step
                             vehicle.position = -0.02 - (lane_idx * 0.04)
-                            
                             if abs(vehicle.y) >= OBSERVATION_ZONE_LENGTH:
                                 vehicles.remove(vehicle)
                         else:
                             vehicle.position += movement_per_step
-        
-        self.update_stats()
-        self.env.step()
+            
+            self.update_stats()
+            self.env.step()
 
 def animate(frame_num, sim, ax, stats_ax):
     sim.update()
