@@ -24,14 +24,16 @@ MINIMUM_FOLLOW_DISTANCE = 0.05 + (CAR_LENGTH/2)
 TURN_PROBABILITY = 0.3  # 30% chance for right lane vehicles to turn right
 
 class Vehicle:
-    def __init__(self, id: int, direction: str, lane: int):
+    def __init__(self, id: int, direction: str, lane: int, env):
+        self.env = env
         self.id = id
         self.direction = direction
         self.lane = lane
+        self.total_wait_time = 0
+        self.is_waiting = False
         self.wait_start = None
+        self.last_position = None
         self.stop_count = 0
-        self.is_waiting = False  # New flag to track if vehicle is currently stopped
-        self.last_position = None  # To track if vehicle has moved
         
         # 95% chance of normal length, 5% chance of larger length
         if random.random() < 0.95:
@@ -68,37 +70,70 @@ class Vehicle:
         self.turn_progress = 0  # 0 to 1 for turn animation
 
     def update_waiting_status(self, current_position):
-        # Check if vehicle has moved by comparing positions
-        MOVEMENT_THRESHOLD = 0.00001  # Small threshold
-        has_moved = abs(current_position - self.last_position) > MOVEMENT_THRESHOLD
+        MOVEMENT_THRESHOLD = 0.00001
+        has_moved = abs(current_position - self.last_position) > MOVEMENT_THRESHOLD if self.last_position is not None else True
         
-        # Update waiting status
         was_waiting = self.is_waiting
         self.is_waiting = not has_moved
-        
-        # Debug status change
-        if was_waiting != self.is_waiting and DEBUG:
-            print(f"Vehicle {self.id} waiting status changed from {was_waiting} to {self.is_waiting}")
-            print(f"  Current pos: {current_position:.6f}, Last pos: {self.last_position:.6f}")
+
+        if self.is_waiting and not was_waiting:
+            self.wait_start = self.env.now
+            if DEBUG:
+                print(f"Vehicle {self.id} started waiting at {self.env.now:.1f}s")
+        elif not self.is_waiting and was_waiting and self.wait_start is not None:
+            wait_duration = self.env.now - self.wait_start
+            if DEBUG:
+                print(f"Vehicle {self.id} stopped waiting, duration: {wait_duration:.1f}s")
+            self.wait_start = None
         
         self.last_position = current_position
+        return self.is_waiting
 
 class TrafficStats:
     def __init__(self):
         self.completed_count = 0
-        self.wait_times = deque(maxlen=50)  # Rolling window of recent wait times
+        self.wait_times = deque(maxlen=50)
         self.waiting_count = 0
-        self.current_waiting = {}  # Track currently waiting vehicles by ID
+        self.current_waiting = {}
+        self.MAX_WAIT_TIME = GREEN_DURATION + YELLOW_DURATION
 
     def start_waiting(self, vehicle_id, time):
         if vehicle_id not in self.current_waiting:
             self.current_waiting[vehicle_id] = time
 
+            if DEBUG:
+                print(f"Started waiting: Vehicle {vehicle_id} at time {time:.1f}")
+
     def stop_waiting(self, vehicle_id, current_time):
         if vehicle_id in self.current_waiting:
             wait_time = current_time - self.current_waiting[vehicle_id]
-            self.wait_times.append(wait_time)
+            if 0 < wait_time <= self.MAX_WAIT_TIME:
+                self.wait_times.append(wait_time)
+                if DEBUG:
+                    print(f"Stopped waiting: Vehicle {vehicle_id}, waited {wait_time:.1f}s")
+                    print(f"Current wait times list: {list(self.wait_times)}")
+            else:
+                if DEBUG:
+                    print(f"Discarded invalid wait time: {wait_time:.1f}s for vehicle {vehicle_id}")
             del self.current_waiting[vehicle_id]
+
+    def get_average_wait_time(self):
+        # First, add current ongoing wait times to the calculation
+        current_time = self.env.now if hasattr(self, 'env') else 0
+        active_waits = []
+        
+        # Calculate current wait durations for vehicles still waiting
+        for vehicle_id, start_time in self.current_waiting.items():
+            current_wait = current_time - start_time
+            if 0 < current_wait <= self.MAX_WAIT_TIME:
+                active_waits.append(current_wait)
+        
+        # Combine completed wait times with active wait times
+        all_times = list(self.wait_times) + active_waits
+        
+        if not all_times:
+            return 0.0
+        return sum(all_times) / len(all_times)
 
 class TrafficLight:
     def __init__(self, env):
@@ -149,6 +184,9 @@ class TrafficSimulation:
 
         # Initialize decorative elements
         self.decorations = self._init_decorations()
+
+        for stats in self.stats.values():
+            stats.env = self.env
 
     def _init_decorations(self):
         building_colors = ['#A0522D', '#8B4513', '#6B4423', '#CD853F']  # Brown shades
@@ -237,28 +275,45 @@ class TrafficSimulation:
     def generate_vehicles(self, direction, lane):
         id_counter = 0
         while True:
-            # Get total number of vehicles across all lanes in all directions
             num_vehicles = sum(sum(len(lane) for lane in lanes) for lanes in self.vehicles.values())
             
-            # Only generate new vehicle if within 30% of target traffic volume
             if num_vehicles <= TRAFFIC_VOLUME * 1.3:
-                # Add new vehicle if there's space
                 if not self.vehicles[direction][lane]:
-                    vehicle = Vehicle(id_counter, direction, lane)
+                    vehicle = Vehicle(id_counter, direction, lane, self.env)  # Only set env once
                     self.vehicles[direction][lane].append(vehicle)
                     id_counter += 1
                 else:
-                    # Check if there's enough space from the last vehicle
                     last_vehicle = self.vehicles[direction][lane][-1]
                     if abs(abs(last_vehicle.position) - OBSERVATION_ZONE_LENGTH) > MINIMUM_FOLLOW_DISTANCE:
-                        vehicle = Vehicle(id_counter, direction, lane)
+                        vehicle = Vehicle(id_counter, direction, lane, self.env)  # Don't forget env here
                         self.vehicles[direction][lane].append(vehicle)
                         id_counter += 1
             
-            # Random interval between vehicles based on average arrival rate
             yield self.env.timeout(random.expovariate(AVERAGE_ARRIVAL_RATE))
     
     def update(self):
+        for direction, lanes in self.vehicles.items():
+            for lane in lanes:
+                for vehicle in lane:
+                    stop_position = 0.1 * (NUM_LANES/2) + CAR_LENGTH
+                    is_at_intersection = abs(vehicle.position) <= stop_position
+                    
+                    if is_at_intersection and not vehicle.crossed_intersection:
+                        light_group = "NS" if direction in ["north", "south"] else "EW"
+                        is_red = self.traffic_light.states[light_group] == "red"
+                        
+                        if is_red and not vehicle.turning_right:
+                            if vehicle.wait_start is None:
+                                if DEBUG:
+                                    print(f"{direction.upper()}: Vehicle {vehicle.id} at intersection, red light")
+                                self.stats[direction].start_waiting(vehicle.id, self.env.now)
+                                vehicle.wait_start = self.env.now
+                        elif vehicle.wait_start is not None:
+                            if DEBUG:
+                                print(f"{direction.upper()}: Vehicle {vehicle.id} can proceed")
+                            self.stats[direction].stop_waiting(vehicle.id, self.env.now)
+                            vehicle.wait_start = None
+
         # Move vehicles based on traffic light state
         base_movement = AVERAGE_SPEED / 3600  # Convert from miles/hour to miles/second
 
@@ -518,7 +573,7 @@ def animate(frame_num, sim, ax, stats_ax):
     ax.grid(True)
     ax.set_aspect('equal')
     
-    # Draw statistics
+    # Update stats display
     stats_ax.axis('off')
     y_pos = 0.95
     stats_ax.text(0.5, 1.0, f"Time: {sim.env.now:.1f}s", ha='center', va='top')
@@ -526,8 +581,10 @@ def animate(frame_num, sim, ax, stats_ax):
     for direction in ["North", "South", "East", "West"]:
         dir_lower = direction.lower()
         stats = sim.stats[dir_lower]
-        avg_wait = np.mean(list(stats.wait_times)) if stats.wait_times else 0
-        current_waiting = stats.waiting_count  # Use the actual count
+        
+        # Calculate average wait time using the updated method
+        avg_wait = stats.get_average_wait_time()
+        current_waiting = stats.waiting_count
         
         text = (
             f"{direction}:\n"
