@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import defaultdict, deque
 
-NUM_LANES = 3 # In each direction ✅
+NUM_LANES = 2 # In each direction ✅
 LANE_WIDTH = 0.04
 
 GREEN_DURATION = 5
@@ -21,14 +21,18 @@ MINIMUM_FOLLOW_DISTANCE = 0.05 + (CAR_LENGTH/2)
 
 TURN_PROBABILITY = 0.7  # 30% chance for right lane vehicles to turn right
 
-
-
 class Vehicle:
     def __init__(self, id: int, direction: str, lane: int):
         self.id = id
         self.direction = direction
         self.lane = lane
         self.wait_start = None
+        
+        # 95% chance of normal length, 5% chance of larger length
+        if random.random() < 0.95:
+            self.length = CAR_LENGTH  # Normal length
+        else:
+            self.length = CAR_LENGTH * 2  # 200% (like a semi truck or something)
         
         # Calculate lane offset based on lane number
         lane_offset = 0.02 + (lane * 0.04)
@@ -156,14 +160,37 @@ class TrafficSimulation:
         return decorations
 
     def update_stats(self):
-        # Update waiting counts
+        # Update waiting counts for each direction
         for direction, lanes in self.vehicles.items():
             stats = self.stats[direction]
+            light_group = "NS" if direction in ["north", "south"] else "EW"
+            light_state = self.traffic_light.states[light_group]
+            can_move = light_state not in ["red", "yellow"]
+            
             waiting_count = 0
-            for lane in lanes:
-                waiting_count += sum(1 for v in lane 
-                                   if not v.crossed_intersection 
-                                   and abs(v.position) < MINIMUM_FOLLOW_DISTANCE)
+            
+            for lane_idx, vehicles in enumerate(lanes):
+                for vehicle in vehicles:
+                    # A vehicle is considered waiting if:
+                    # 1. It hasn't crossed the intersection yet
+                    # 2. It's within the waiting zone
+                    # 3. Either:
+                    #    - The light is red/yellow and it's not turning right
+                    #    - OR there's a vehicle ahead of it that's also waiting
+                    in_waiting_zone = abs(vehicle.position) < MINIMUM_FOLLOW_DISTANCE
+                    is_waiting = False
+                    
+                    if not vehicle.crossed_intersection and in_waiting_zone:
+                        # Check if vehicle should be waiting due to traffic light
+                        if not can_move and not (vehicle.turning_right and lane_idx == NUM_LANES-1):
+                            is_waiting = True
+                            stats.start_waiting(vehicle.id, self.env.now)
+                        else:
+                            stats.stop_waiting(vehicle.id, self.env.now)
+                    
+                    if is_waiting:
+                        waiting_count += 1
+                    
             stats.waiting_count = waiting_count
 
     def generate_vehicles(self, direction, lane):
@@ -243,7 +270,9 @@ class TrafficSimulation:
                     if i > 0:
                         try:
                             vehicle_ahead = vehicles[i-1]
-                            within_following_distance = abs(vehicle.position - vehicle_ahead.position) >= MINIMUM_FOLLOW_DISTANCE
+                            # Use the larger of the two vehicles' lengths for minimum following distance
+                            min_follow = 0.05 + max(vehicle.length, vehicle_ahead.length)/2
+                            within_following_distance = abs(vehicle.position - vehicle_ahead.position) >= min_follow
 
                             # Special case: if vehicle ahead is turning and has crossed, we can move
                             if vehicle_ahead.turning_right and vehicle_ahead.crossed_intersection:
@@ -368,25 +397,28 @@ def animate(frame_num, sim, ax, stats_ax):
     for direction, lanes in sim.vehicles.items():
         for lane_idx, vehicles in enumerate(lanes):
             for vehicle in vehicles:
-                # Use red color for turning vehicles
-                color = 'red' if vehicle.turning_right else 'blue'
+                # Determine color based on length and turning status
+                if vehicle.turning_right:
+                    color = 'red'  # Turning vehicles stay red
+                else:
+                    # Normal length vehicles are blue, longer vehicles are purple
+                    color = 'blue' if vehicle.length == CAR_LENGTH else 'purple'
                 
-                # Create simple car shape - just a rectangle
-                car_width = 0.02   # Width of car
+                # Create car shape using vehicle's specific length
+                car_width = 0.02   # Width of car stays constant
                 
                 if direction in ["north", "south"]:
                     x = vehicle.x
                     y = vehicle.position
-                    # Determine if car should be drawn horizontally or vertically
                     if vehicle.turning_right and vehicle.crossed_intersection:
                         # Draw horizontally for turned vehicles
-                        rect = plt.Rectangle((x - CAR_LENGTH/2, y - car_width/2),
-                                          CAR_LENGTH, car_width,
+                        rect = plt.Rectangle((x - vehicle.length/2, y - car_width/2),
+                                          vehicle.length, car_width,
                                           color=color)
                     else:
                         # Draw vertically for straight vehicles
-                        rect = plt.Rectangle((x - car_width/2, y - CAR_LENGTH/2), 
-                                          car_width, CAR_LENGTH, 
+                        rect = plt.Rectangle((x - car_width/2, y - vehicle.length/2), 
+                                          car_width, vehicle.length, 
                                           color=color)
                     ax.add_patch(rect)
                     
@@ -395,13 +427,13 @@ def animate(frame_num, sim, ax, stats_ax):
                     y = vehicle.y
                     if vehicle.turning_right and vehicle.crossed_intersection:
                         # Draw vertically for turned vehicles
-                        rect = plt.Rectangle((x - car_width/2, y - CAR_LENGTH/2),
-                                          car_width, CAR_LENGTH,
+                        rect = plt.Rectangle((x - car_width/2, y - vehicle.length/2),
+                                          car_width, vehicle.length,
                                           color=color)
                     else:
                         # Draw horizontally for straight vehicles
-                        rect = plt.Rectangle((x - CAR_LENGTH/2, y - car_width/2),
-                                          CAR_LENGTH, car_width,
+                        rect = plt.Rectangle((x - vehicle.length/2, y - car_width/2),
+                                          vehicle.length, car_width,
                                           color=color)
                     ax.add_patch(rect)
     
