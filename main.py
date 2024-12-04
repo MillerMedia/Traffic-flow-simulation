@@ -1,21 +1,20 @@
 import simpy
 import random
-import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from collections import defaultdict, deque
+from collections import deque
 
 DEBUG = False
 
-NUM_LANES = 2 # In each direction ✅
+NUM_LANES = 2 # In each direction
 LANE_WIDTH = 0.04
 
-GREEN_DURATION = 30
+GREEN_DURATION = 10
 YELLOW_DURATION = 2
-OBSERVATION_ZONE_LENGTH = 0.5 # @todo can we change the size of the map when adjusting this
-AVERAGE_SPEED = 60
+OBSERVATION_ZONE_LENGTH = 0.5
+AVERAGE_SPEED = 55 # speeds of 35 or slower tend to give problems when cars are still in intersections after a red light
 
-TRAFFIC_VOLUME = 25 # Average total number of cars at intersection per minute
+TRAFFIC_VOLUME = 66 # Average total number of cars at intersection per minute
 AVERAGE_ARRIVAL_RATE = 60/TRAFFIC_VOLUME # per second arrival rate
 
 CAR_LENGTH = 0.04
